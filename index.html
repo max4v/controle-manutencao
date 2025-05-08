@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Controle de Manutenção</title>
+    
+    <!-- Bibliotecas para importação/exportação -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        h1 { color: #333; }
+        label { display: block; margin-top: 15px; }
+        input[type="text"], input[type="date"] {
+            width: 100%; padding: 8px; margin-top: 5px;
+        }
+        button {
+            margin-top: 15px; padding: 10px 15px; 
+            background: #4CAF50; color: white; 
+            border: none; cursor: pointer;
+        }
+        .results { margin-top: 30px; }
+        table {
+            width: 100%; border-collapse: collapse; margin-top: 10px;
+        }
+        th, td { 
+            border: 1px solid #ddd; 
+            padding: 8px; 
+            text-align: left; 
+        }
+        th { background-color: #f2f2f2; }
+
+        /* Interface de backup automático */
+        #autoBackupMessage {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: #d4edda;
+            color: #155724;
+            padding: 10px 15px;
+            border-radius: 4px;
+            z-index: 9999;
+            display: none;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        /* Interface de restauração */
+        #restoreOptions {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff3cd;
+            border: 1px solid #ffeeba;
+            border-radius: 4px;
+        }
+
+        #restoreOptions select {
+            width: 100%;
+            padding: 8px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Controle de Manutenção</h1>
+
+        <!-- Formulário -->
+        <label for="assetNumber">Número do Patrimônio:</label>
+        <input type="text" id="assetNumber" placeholder="Ex: CPU001">
+
+        <label for="setor">Setor:</label>
+        <input type="text" id="setor" placeholder="Ex: TI, Administração">
+
+        <label for="maintenanceDate">Data da Manutenção:</label>
+        <input type="date" id="maintenanceDate">
+
+        <label for="defeito">Defeito:</label>
+        <input type="text" id="defeito" placeholder="Descrição do defeito">
+
+        <label for="fluig">Protocolo FLUIG:</label>
+        <input type="text" id="fluig" placeholder="Número do Protocolo">
+
+        <label for="description">Descrição (opcional):</label>
+        <input type="text" id="description" placeholder="Detalhes da manutenção">
+
+        <button onclick="saveMaintenance()">Salvar Registro</button>
+
+        <!-- Importação -->
+        <div class="import-section">
+            <h3>Importar Dados</h3>
+            <label>Importar CSV:</label>
+            <input type="file" accept=".csv" onchange="importCSV(event)">
+
+            <label>Importar ODS/XLS/XLSX:</label>
+            <input type="file" accept=".ods,.xls,.xlsx" onchange="importODS(event)">
+
+            <label>Importar TXT (CSV):</label>
+            <input type="file" accept=".txt" onchange="importTXT(event)">
+        </div>
+
+        <hr>
+
+        <!-- Busca por patrimônio -->
+        <h2>Buscar Registros</h2>
+        <label for="searchAsset">Número do Patrimônio:</label>
+        <input type="text" id="searchAsset" placeholder="Ex: CPU001">
+        <button onclick="searchMaintenance()">Buscar</button>
+        <div class="results" id="results"></div>
+
+        <hr>
+
+        <!-- Relatório mensal -->
+        <h2>Relatórios Mensais</h2>
+        <button onclick="generateMonthlyReport()">Gerar Relatório Mensal</button>
+        <div class="results" id="monthlyReport"></div>
+
+        <hr>
+
+        <!-- Exportar Dados -->
+        <h2>Exportar Dados</h2>
+        <button onclick="exportToCSV()">Exportar para CSV</button>
+        <button onclick="exportToXLS()">Exportar para XLS</button>
+        <button onclick="exportToPDF()">Exportar para PDF</button>
+    </div>
+
+    <!-- Interface de progresso durante importação -->
+    <div id="importProgress" style="display: none; margin: 15px 0; padding: 10px; background: #e3f2fd; border-radius: 4px;">
+        <span>Importando dados...</span>
+        <div id="progressBar" style="height: 10px; background: #2196f3; width: 0%; transition: width 0.3s;"></div>
+    </div>
+
+    <!-- Interface de restauração de backup -->
+    <div id="restoreOptions" style="display: none;">
+        <h3>Restaurar Dados</h3>
+        <p>Se os dados forem perdidos, você pode recuperar de um backup:</p>
+        <label>Selecione um backup salvo:</label>
+        <select id="backupSelector" onchange="restoreFromLocalStorageBackup()"></select>
+        <button onclick="importCSV(event)">Restaurar de CSV</button>
+    </div>
+
+    <script>
+        // Validação de formato de data
+        function isValidDate(dateString) {
+            const regex = /^\d{4}-\d{2}-\d{2}$/;
+            if (regex.test(dateString)) return true;
+
+            const parts = dateString.split(/[\/\-\.]/);
+            if (parts.length !== 3) return false;
+
+            const [d, m, y] = parts;
+            const date = new Date(y, m - 1, d);
+            return date.toString() !== 'Invalid Date' && 
+                   !isNaN(date.getTime()) &&
+                   `${y}-${m}-${d}`;
+        }
+
+        // Verifica duplicatas
+        function isDuplicate(asset, date) {
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            return records.some(r => r.asset === asset && r.date === date);
+        }
+
+        // Salvar registro
+        function saveMaintenance() {
+            const asset = document.getElementById('assetNumber').value.trim();
+            const setor = document.getElementById('setor').value.trim();
+            const date = document.getElementById('maintenanceDate').value;
+            const defeito = document.getElementById('defeito').value.trim();
+            const fluig = document.getElementById('fluig').value.trim();
+            const desc = document.getElementById('description').value.trim();
+
+            if (!asset || !date || !setor || !defeito || !fluig) {
+                alert('Preencha todos os campos obrigatórios!');
+                return;
+            }
+
+            const formattedDate = isValidDate(date) ? date : convertDate(date);
+            if (!formattedDate) {
+                alert('Formato de data inválido. Use AAAA-MM-DD');
+                return;
+            }
+
+            if (isDuplicate(asset, formattedDate)) {
+                alert('Registro duplicado: Já existe um registro com este patrimônio na mesma data.');
+                return;
+            }
+
+            const entry = {
+                asset,
+                setor,
+                date: formattedDate,
+                defeito,
+                fluig,
+                description: desc
+            };
+
+            let records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            records.push(entry);
+            localStorage.setItem('maintenanceRecords', JSON.stringify(records));
+            
+            alert('Registro salvo localmente com sucesso!');
+            clearForm();
+            autoBackupLocalStorage(); // Faz backup imediato
+        }
+
+        // Limpar formulário
+        function clearForm() {
+            document.getElementById('assetNumber').value = '';
+            document.getElementById('setor').value = '';
+            document.getElementById('maintenanceDate').value = '';
+            document.getElementById('defeito').value = '';
+            document.getElementById('fluig').value = '';
+            document.getElementById('description').value = '';
+        }
+
+        // Gera conteúdo CSV
+        function generateCSVContent() {
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            if (records.length === 0) return '';
+
+            let csv = 'Número Patrimônio,Setor,Data,Fluig,Defeito,Descrição\n';
+            records.forEach(r => {
+                csv += `"${r.asset}","${r.setor}","${r.date}","${r.fluig}","${r.defeito}","${r.description || ''}"\n`;
+            });
+            
+            return csv;
+        }
+
+        // Exportar para CSV
+        function exportToCSV() {
+            const content = generateCSVContent();
+            const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `backup_manutencao_${timestamp}.csv`);
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // Exportar para XLS
+        function exportToXLS() {
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            if (records.length === 0) return;
+
+            const ws = XLSX.utils.json_to_sheet(records);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Manutenções');
+            XLSX.writeFile(wb, `relatorio_manutencoes_${new Date().toISOString().slice(0,10)}.xls`);
+        }
+
+        // Exportar para PDF
+        function exportToPDF() {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+
+            if (records.length === 0) return;
+
+            const columns = ["Patrimônio", "Data", "Setor", "Fluig", "Defeito", "Descrição"];
+            const data = records.map(r => [r.asset, r.date, r.setor, r.fluig, r.defeito, r.description || "-"]);
+
+            doc.autoTable({
+                head: [columns],
+                body: data,
+                startY: 20,
+                styles: { fontSize: 10 },
+                margin: { horizontal: 5 },
+                columnStyles: {
+                    0: { cellWidth: 25 },
+                    1: { cellWidth: 20 },
+                    2: { cellWidth: 25 },
+                    3: { cellWidth: 25 },
+                    4: { cellWidth: 30 },
+                    5: { cellWidth: 35 }
+                }
+            });
+
+            doc.setFontSize(16);
+            doc.text('Relatório de Manutenções', 14, 15);
+            doc.save('relatorio_manutencoes.pdf');
+        }
+
+        // Buscar registros por patrimônio
+        function searchMaintenance() {
+            const searchAsset = document.getElementById('searchAsset').value.trim().toUpperCase();
+            const output = document.getElementById('results');
+            
+            if (!searchAsset) {
+                output.innerHTML = '<p style="color:red;">Digite um número de patrimônio para buscar.</p>';
+                return;
+            }
+
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            const filtered = records.filter(r => r.asset.toUpperCase() === searchAsset);
+
+            if (filtered.length === 0) {
+                output.innerHTML = `<p>Nenhum registro encontrado para ${searchAsset}</p>`;
+                return;
+            }
+
+            // Agrupamento mensal
+            const monthlyCount = {};
+            filtered.forEach(r => {
+                const month = r.date.slice(0, 7); // YYYY-MM
+                monthlyCount[month] = (monthlyCount[month] || 0) + 1;
+            });
+
+            // Tabela de resultados
+            let html = `<h3>Registros para ${searchAsset}</h3>`;
+            html += `<p><strong>Total de Visitas:</strong> ${filtered.length} vez(es)</p>`;
+            html += '<table><tr><th>Data</th><th>Setor</th><th>Fluig</th><th>Defeito</th></tr>';
+
+            filtered.forEach(r => {
+                html += `<tr>
+                    <td>${r.date}</td>
+                    <td>${r.setor}</td>
+                    <td>${r.fluig}</td>
+                    <td>${r.defeito}</td>
+                </tr>`;
+            });
+
+            html += '</table><h4>Visão Mensal:</h4><ul>';
+            Object.entries(monthlyCount).forEach(([month, count]) => {
+                html += `<li><strong>${month}:</strong> ${count} vez(es)</li>`;
+            });
+            html += '</ul>';
+
+            output.innerHTML = html;
+        }
+
+        // Gerar relatório mensal
+        function generateMonthlyReport() {
+            const reportOutput = document.getElementById('monthlyReport');
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+
+            if (records.length === 0) {
+                reportOutput.innerHTML = '<p>Não há registros disponíveis.</p>';
+                showRestoreOptions();
+                return;
+            }
+
+            const groupedByMonth = {};
+            records.forEach(r => {
+                const month = r.date.slice(0, 7);
+                if (!groupedByMonth[month]) groupedByMonth[month] = {};
+
+                if (!groupedByMonth[month][r.asset]) {
+                    groupedByMonth[month][r.asset] = { count: 0, setor: r.setor };
+                }
+                
+                groupedByMonth[month][r.asset].count += 1;
+            });
+
+            let html = '<h3>Relatório Mensal de Manutenções</h3>';
+            Object.keys(groupedByMonth).sort().forEach(month => {
+                html += `<h4>${month}</h4>`;
+                html += '<table><tr><th>Patrimônio</th><th>Setor</th><th>Total de Idas</th></tr>';
+                
+                Object.entries(groupedByMonth[month]).forEach(([asset, data]) => {
+                    html += `<tr>
+                        <td>${asset}</td>
+                        <td>${data.setor}</td>
+                        <td>${data.count}</td>
+                    </tr>`;
+                });
+                
+                html += '</table>';
+            });
+
+            html += '<div style="margin-top: 20px;">';
+            html += `<button onclick="exportToCSV()">Exportar para CSV</button>`;
+            html += `<button onclick="exportToXLS()">Exportar para XLS</button>`;
+            html += `<button onclick="exportToPDF()">Exportar para PDF</button>`;
+            html += '</div>';
+
+            reportOutput.innerHTML = html;
+        }
+
+        // Função para atualizar interface de progresso
+        function updateProgress(progress, total, processed) {
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('importProgress').querySelector('span');
+            const percentage = Math.round((processed / total) * 100);
+            
+            progressBar.style.width = `${percentage}%`;
+            progressText.textContent = `Importando... ${processed}/${total} registros`;
+            
+            if (processed === total) {
+                setTimeout(() => {
+                    document.getElementById('importProgress').style.display = 'none';
+                    progressText.textContent = 'Importação concluída!';
+                    progressBar.style.width = '0%';
+                }, 1000);
+            }
+        }
+
+        // Importação de CSV
+        function importCSV(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            document.getElementById('importProgress').style.display = 'block';
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const csv = reader.result;
+                    const lines = csv.split('\n').filter(line => line.trim());
+                    const totalLines = lines.length - 1;
+                    let processed = 0;
+                    
+                    for (let i = 1; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (!line) continue;
+                        
+                        const [asset, setor, date, fluig, defeito, description] = line.split(',').map(val => 
+                            val.replace(/^"|"$/g, '').trim()
+                        );
+
+                        if (!asset || !date) {
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        let formattedDate = isValidDate(date) ? date : convertDate(date);
+                        if (!formattedDate) {
+                            console.warn(`Data inválida ignorada: ${date}`);
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        if (isDuplicate(asset, formattedDate)) {
+                            console.log(`Duplicata ignorada: ${asset} - ${formattedDate}`);
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        let records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+                        records.push({ asset, setor, date: formattedDate, fluig, defeito, description });
+                        localStorage.setItem('maintenanceRecords', JSON.stringify(records));
+
+                        processed++;
+                        updateProgress(0, totalLines, processed);
+                    }
+
+                    alert(`Importação concluída! Registros processados: ${processed}`);
+                    generateMonthlyReport();
+                } catch (error) {
+                    console.error("Erro geral na importação:", error);
+                    alert("Erro durante a importação. Verifique o console para detalhes.");
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Importação de ODS/XLS/XLSX
+        function importODS(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            document.getElementById('importProgress').style.display = 'block';
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const data = new Uint8Array(reader.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const json = XLSX.utils.sheet_to_json(firstSheet);
+                    
+                    const totalLines = json.length;
+                    let processed = 0;
+                    
+                    for (let i = 0; i < json.length; i++) {
+                        const row = json[i];
+                        const asset = row.Patrimônio || row.Patrimonio || row.Asset || '';
+                        const setor = row.Setor || row.Sector || '';
+                        const date = row.Data || row.Date || '';
+                        const fluig = row.Fluig || row.Protocol || '';
+                        const defeito = row.Defeito || row.Defect || '';
+                        const description = row.Descrição || row.Description || '';
+
+                        if (!asset || !date) {
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        let formattedDate = isValidDate(date) ? date : convertDate(date);
+                        if (!formattedDate) {
+                            console.warn(`Data inválida ignorada: ${date}`);
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        if (isDuplicate(asset, formattedDate)) {
+                            console.log(`Duplicata ignorada: ${asset} - ${formattedDate}`);
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        let records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+                        records.push({ asset, setor, date: formattedDate, fluig, defeito, description });
+                        localStorage.setItem('maintenanceRecords', JSON.stringify(records));
+
+                        processed++;
+                        updateProgress(0, totalLines, processed);
+                    }
+
+                    alert(`Importação concluída! Registros processados: ${processed}`);
+                    generateMonthlyReport();
+                } catch (error) {
+                    console.error("Erro na importação ODS/XLS/XLSX:", error);
+                    alert("Erro durante a importação ODS/XLS/XLSX.");
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Importação de TXT (CSV dentro de TXT)
+        function importTXT(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            document.getElementById('importProgress').style.display = 'block';
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const csv = reader.result;
+                    const lines = csv.split('\n').filter(line => line.trim());
+                    const totalLines = lines.length - 1;
+                    let processed = 0;
+
+                    for (let i = 1; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (!line) continue;
+
+                        const [asset, setor, date, fluig, defeito, description] = line.split('\t').map(val => 
+                            val.replace(/^"|"$/g, '').trim()
+                        );
+
+                        if (!asset || !date) {
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        let formattedDate = isValidDate(date) ? date : convertDate(date);
+                        if (!formattedDate) {
+                            console.warn(`Data inválida ignorada: ${date}`);
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        if (isDuplicate(asset, formattedDate)) {
+                            console.log(`Duplicata ignorada: ${asset} - ${formattedDate}`);
+                            processed++;
+                            updateProgress(0, totalLines, processed);
+                            continue;
+                        }
+
+                        let records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+                        records.push({ asset, setor, date: formattedDate, fluig, defeito, description });
+                        localStorage.setItem('maintenanceRecords', JSON.stringify(records));
+
+                        processed++;
+                        updateProgress(0, totalLines, processed);
+                    }
+
+                    alert(`Importação concluída! Registros processados: ${processed}`);
+                    generateMonthlyReport();
+                } catch (error) {
+                    console.error("Erro na importação TXT:", error);
+                    alert("Erro durante a importação TXT.");
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Função para converter data para formato YYYY-MM-DD
+        function convertDate(dateString) {
+            const regex = /^\d{4}-\d{2}-\d{2}$/;
+            if (regex.test(dateString)) return dateString;
+
+            const parts = dateString.split(/[\/\-\.]/);
+            if (parts.length !== 3) return null;
+
+            const [d, m, y] = parts;
+            const date = new Date(y, m - 1, d);
+            if (date.toString() === 'Invalid Date' || isNaN(date.getTime())) return null;
+            
+            return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+        }
+
+        // Backup automático no localStorage
+        function autoBackupLocalStorage() {
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            if (records.length === 0) return;
+
+            const key = `backup_${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+            localStorage.setItem(key, localStorage.getItem('maintenanceRecords'));
+
+            // Atualiza lista de backups
+            const selector = document.getElementById('backupSelector');
+            selector.innerHTML = '';
+            Object.keys(localStorage).filter(k => k.startsWith('backup_')).forEach(key => {
+                const option = document.createElement('option');
+                option.value = key;
+                option.textContent = key.replace('backup_', 'Backup ');
+                selector.appendChild(option);
+            });
+
+            document.getElementById('restoreOptions').style.display = 'block';
+        }
+
+        // Restaurar backup do localStorage
+        function restoreFromLocalStorageBackup() {
+            const selector = document.getElementById('backupSelector');
+            const selectedKey = selector.value;
+            if (!selectedKey) return;
+
+            const backupData = localStorage.getItem(selectedKey);
+            if (!backupData) {
+                alert('Backup não encontrado.');
+                return;
+            }
+
+            localStorage.setItem('maintenanceRecords', backupData);
+            alert(`Dados restaurados do backup: ${selectedKey}`);
+            generateMonthlyReport();
+        }
+
+        // Verifica se há registros ao carregar
+        window.addEventListener('load', () => {
+            const records = JSON.parse(localStorage.getItem('maintenanceRecords') || '[]');
+            if (records.length === 0) {
+                showRestoreOptions();
+            } else {
+                autoBackupLocalStorage(); // Inicia backup
+                setInterval(autoBackupLocalStorage, 600000); // A cada 10 minutos
+            }
+        });
+
+        // Mostrar opções de restauração
+        function showRestoreOptions() {
+            const selector = document.getElementById('backupSelector');
+            selector.innerHTML = '';
+            const backupKeys = Object.keys(localStorage).filter(k => k.startsWith('backup_'));
+            
+            if (backupKeys.length > 0) {
+                backupKeys.sort().reverse().forEach(key => {
+                    const option = document.createElement('option');
+                    option.value = key;
+                    option.textContent = key.replace('backup_', 'Backup ');
+                    selector.appendChild(option);
+                });
+
+                document.getElementById('restoreOptions').style.display = 'block';
+            } else {
+                document.getElementById('restoreOptions').style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
